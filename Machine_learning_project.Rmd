@@ -1,0 +1,189 @@
+---
+title: "Practical Machine Learning Course Project Report"
+author: "Harmeet"
+date: "August 01, 2016"
+output: html_document
+---
+
+
+### Laoding the libraries etc
+```{r, echo=TRUE}
+setwd("C:/Users/Shaffu_Knowledge/Desktop")
+
+library(caret)
+library(randomForest)
+library(rpart.plot)
+```
+
+
+
+## Data Sources
+### The training data @
+### https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+### The test data @
+### https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+
+
+## Data Info
+
+### We clean the data while loading the data from the csv files for training and validation.
+### Quick look at the data, Note the classe is being predicted here
+
+```{r, echo=TRUE}
+
+train_data  <- read.csv("pml-training.csv", na.strings = c("NA", "#DIV/0!", ""))
+valid_data  <- read.csv("pml-testing.csv",  na.strings = c("NA", "#DIV/0!", ""))
+
+str(train_data, list.len=15)
+table(train_data$classe)
+prop.table(table(train_data$user_name, train_data$classe), 1)
+prop.table(table(train_data$classe))
+```
+
+
+## Cross Validation
+
+### Dropping first 6 columns which are information based.
+### Partitioning the data into Training and Validation into 60% and 40% data sets
+### Identify the zero covariates and remove them from train_1 and train_2
+
+
+```{r, echo=TRUE}
+train_data <- train_data[, 7:160]
+valid_data  <- valid_data[, 7:160]
+
+data  <- apply(!is.na(train_data), 2, sum) > 19621  
+train_data <- train_data[, data]
+valid_data  <- valid_data[, data]
+
+
+set.seed(99)
+in_train <- createDataPartition(y=train_data$classe, p=0.60, list=FALSE)
+train_1  <- train_data[in_train,]
+train_2  <- train_data[-in_train,]
+dim(train_1)
+dim(train_2)
+
+nzv_cols <- nearZeroVar(train_1)
+if(length(nzv_cols) > 0) {
+  train_1 <- train_1[, -nzv_cols]
+  train_2 <- train_2[, -nzv_cols]
+}
+
+dim(train_1)
+dim(train_2)
+```
+
+### There are 53 Covariates Identified. Their relative importance is checked using the random forest and plotting the data
+```{r, echo=TRUE}
+set.seed(99)
+fitModel <- randomForest( classe~., data=train_1, importance=TRUE, ntree=100)
+varImpPlot(fitModel)
+```
+
+### We will use accuracy and gini graphs to use the top 10 relavent varaibles.They being: yaw_belt, roll_belt, num_window, pitch_belt, magnet_dumbbell_y, magnet_dumbbell_z, pitch_forearm, accel_dumbbell_y, roll_arm, and roll_forearm.
+### Correltion matrix for 10 varibales if the value is greater than 75%
+
+```{r, echo=TRUE}
+cor_rel = cor(train_1[,c("yaw_belt","roll_belt","num_window","pitch_belt","magnet_dumbbell_z",
+                        "magnet_dumbbell_y","pitch_forearm","accel_dumbbell_y","roll_arm",
+                        "roll_forearm")])
+diag(cor_rel) <- 0
+which(abs(cor_rel)>0.75, arr.ind=TRUE)
+cor(train_1$roll_belt, train_1$yaw_belt)
+
+```
+### roll_belt and yaw_belt which have a high correlation greater than 75%. Dropping yaw_belt
+
+```{r, echo=TRUE}
+cor_rel = cor(train_1[,c("roll_belt","num_window","pitch_belt","magnet_dumbbell_z",
+                        "magnet_dumbbell_y","pitch_forearm","accel_dumbbell_y","roll_arm",
+                        "roll_forearm")])
+diag(cor_rel) <- 0
+which(abs(cor_rel)>0.50, arr.ind=TRUE)
+```
+### Now we see there is correlation of 50% and we retain these 
+### We categorize the data into groups based on roll_belt values and run tree classifier
+
+```{r, echo=TRUE}
+qplot(roll_belt, magnet_dumbbell_y, colour=classe, data=train_1)
+fitModel <- rpart(classe~., data=train_1, method="class")
+prp(fitModel)
+```
+### Running Modeling with random forest, saving the result in a file.
+### Building Confusion Matrix on train data 2 - train_2.
+
+```{r, echo=TRUE}
+set.seed(99)
+fitModel <- train(classe ~ roll_belt +  num_window + pitch_belt  + magnet_dumbbell_y +        
+                           magnet_dumbbell_z + pitch_forearm + accel_dumbbell_y + 
+                           roll_arm + roll_forearm,
+                  data=train_1,method="rf",
+                  trControl=trainControl(method="cv",number=2),
+                  prox=TRUE,verbose=TRUE,
+                  allowParallel=TRUE)
+                  
+                  
+saveRDS(fitModel, "RF_model.Rds")
+fitModel <- readRDS("RF_model.Rds")
+                  
+                  
+predictions <- predict(fitModel, newdata=train_2)
+confusionMat <- confusionMatrix(predictions, train_2$classe)
+confusionMat
+```
+
+### out-of-sample error rate
+```{r, echo=TRUE}
+miss_classification = function(values, predicted) {
+  sum(predicted != values) / length(values)
+}
+oos_err_rate = miss_classification(train_2$classe, predictions)
+oos_err_rate
+```
+### The 20 Questions to be answered - output in a file
+```{r, echo=TRUE}
+predictions <- predict(fitModel, newdata=valid_data)
+valid_data$classe <- predictions
+submit <- data.frame(problem_id = valid_data$problem_id, classe = predictions)
+write.csv(submit, file = "coursera_sub.csv", row.names = FALSE)
+ans = valid_data$classe
+write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("prb_",i,".txt")
+    write.table(x[i], file=filename, quote=FALSE, row.names=FALSE, col.names=FALSE)
+  }
+}
+write_files(ans)
+```
+
+### PCA Analysis
+```{r, echo=TRUE}
+pre_proc <- preProcess(train_1[, -which(names(train_1) == "classe")],
+                      method = "pca",
+                      thresh = 0.75)
+out_put <- pre_proc$rotation
+
+set.seed(99)
+fit <- train(classe ~ .,
+             data = train_1,
+             method = "rf",
+             preProcess = "pca",
+             trControl = trainControl(method="cv", number=2, preProcOptions=list(thresh=0.75)),
+             prox = TRUE,
+             verbose = TRUE,
+             allowParallel = TRUE)
+             
+             trControl=trainControl(preProcOptions=list(thresh=0.75))
+             trControl
+
+
+
+```
+
+## Conclusion
+### We used 9 variables , Model accuracy is 99.58% and  out-of-sample error is 0.33%
+### In true world getting a model fit of this accuracy is a dream where getting over 80% is consired great.
